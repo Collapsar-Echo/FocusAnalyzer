@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- 背景圆角渐变 -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1e1e" />
+      <stop offset="100%" stop-color="#0f0f0f" />
+    </linearGradient>
+    <!-- 热力图彩虹渐变 -->
+    <linearGradient id="heatGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0000ff" />
+      <stop offset="50%" stop-color="#00ff00" />
+      <stop offset="100%" stop-color="#ff0000" />
+    </linearGradient>
+  </defs>
+
+  <!-- 软件图标底座 (圆角矩形) -->
+  <rect x="32" y="32" width="448" height="448" rx="96" fill="url(#bgGrad)" stroke="#333333" stroke-width="8"/>
+
+  <!-- 背景相片叠影 1 (右下倾斜的相片底框) -->
+  <g transform="translate(40, 20) rotate(8, 256, 256)">
+    <rect x="112" y="96" width="288" height="224" rx="12" fill="#2a2a2a" stroke="#444" stroke-width="4" opacity="0.4"/>
+  </g>
+
+  <!-- 背景相片叠影 2 (主相片框，带有内嵌画面和底边留白，经典的拍立得/摄影感) -->
+  <g transform="translate(0, 0)">
+    <!-- 相片外框 -->
+    <rect x="96" y="96" width="320" height="256" rx="16" fill="#181818" stroke="#3d3d3d" stroke-width="6"/>
+    <!-- 相片内部可视区 -->
+    <rect x="120" y="120" width="272" height="176" rx="8" fill="#121212"/>
+    <!-- 画面中的热力图/山水线条点缀 -->
+    <path d="M 120 250 Q 180 180, 240 210 T 392 160 L 392 296 L 120 296 Z" fill="url(#heatGrad)" opacity="0.35"/>
+  </g>
+
+  <!-- 核心光圈叶片 (Aperture) 与焦点准星 (叠加在相片中心) -->
+  <g transform="translate(256, 208)">
+    <circle cx="0" cy="0" r="75" fill="none" stroke="#2b579a" stroke-width="10" stroke-dasharray="12 6"/>
+    <circle cx="0" cy="0" r="35" fill="#2b579a" opacity="0.95"/>
+    <!-- 十字焦点对齐准星 -->
+    <line x1="-24" y1="0" x2="24" y2="0" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+    <line x1="0" y1="-24" x2="0" y2="24" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
