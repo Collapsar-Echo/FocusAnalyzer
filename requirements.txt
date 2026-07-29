@@ -1,0 +1,8 @@
+exifread==3.5.1
+matplotlib==3.11.1
+numpy==2.5.1
+opencv_python==5.0.0.93
+pyside6==6.10.3
+pyside6_addons==6.10.3
+pyside6_essentials==6.10.3
+rawpy==0.27.0
