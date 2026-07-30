@@ -2,10 +2,8 @@ import sys
 import os
 import hashlib
 import json
-import cv2
-import numpy as np
-import rawpy
-import exifread  # 【新增】读取相机 EXIF 信息的库
+import exifread
+import platform
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel,
@@ -15,16 +13,10 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap, QAction
 import qdarktheme
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-import matplotlib.pyplot as plt
-
-# ================= 缓存目录设置 (打包专用安全路径) =================
-import platform
+# ================= 缓存目录设置 (保持不变) =================
 if platform.system() == "Windows":
-    # Win 会存在: C:\Users\用户名\AppData\Local\FocusAnalyzer\focus_cache
     BASE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "FocusAnalyzer")
 else:
-    # Mac 会存在: /Users/用户名/Library/Application Support/FocusAnalyzer/focus_cache
     BASE_DIR = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "FocusAnalyzer")
 
 CACHE_DIR = os.path.join(BASE_DIR, "focus_cache")
@@ -41,54 +33,35 @@ def get_cache_paths(file_path):
     }
 
 
-# ================= EXIF 解析工具 =================
+# ================= EXIF 解析工具 (保持不变) =================
 def get_exif_string(file_path):
-    """提取相机的 EXIF 信息（含镜头识别）并格式化为字符串"""
     try:
         with open(file_path, 'rb') as f:
             tags = exifread.process_file(f, details=False)
-
-        if not tags:
-            return "⚠️ EXIF 信息: 未包含拍摄参数 (可能是导出的图片剥离了数据)"
-
-        # 1. 相机型号
+        if not tags: return "⚠️ EXIF 信息: 未包含拍摄参数"
         cam_model = str(tags.get('Image Model', '未知相机'))
-
-        # 2. 镜头型号 (双重校验防漏)
-        lens_model = str(tags.get('EXIF LensModel', ''))
-        if not lens_model or lens_model.strip() == '':
-            lens_model = str(tags.get('Image LensModel', '未知镜头'))
-
-        # 3. 快门 (保留 1/200 这样的分数格式)
+        lens_model = str(tags.get('EXIF LensModel', tags.get('Image LensModel', '未知镜头')))
         shutter = str(tags.get('EXIF ExposureTime', '未知'))
         if shutter != '未知': shutter += 's'
-
-        # 4. ISO
         iso = str(tags.get('EXIF ISOSpeedRatings', '未知'))
         if iso != '未知': iso = f"ISO {iso}"
 
-        # 5. 光圈 (把分数 28/10 计算成 f/2.8)
         aperture_tag = tags.get('EXIF FNumber')
         aperture = '未知'
-        if aperture_tag and aperture_tag.values:
-            val = aperture_tag.values[0]
-            if val.den != 0:
-                aperture = f"f/{val.num / val.den:.1f}".replace('.0', '')
+        if aperture_tag and aperture_tag.values and aperture_tag.values[0].den != 0:
+            aperture = f"f/{aperture_tag.values[0].num / aperture_tag.values[0].den:.1f}".replace('.0', '')
 
-        # 6. 焦距
         focal_tag = tags.get('EXIF FocalLength')
         focal = '未知'
-        if focal_tag and focal_tag.values:
-            val = focal_tag.values[0]
-            if val.den != 0:
-                focal = f"{int(val.num / val.den)}mm"
+        if focal_tag and focal_tag.values and focal_tag.values[0].den != 0:
+            focal = f"{int(focal_tag.values[0].num / focal_tag.values[0].den)}mm"
 
         return f"📷 {cam_model}  |  🔭 {lens_model}  |  🎯 {focal}  |  ⭕ {aperture}  |  ⏱️ {shutter}  |  💡 {iso}"
-
     except Exception:
         return "⚠️ EXIF 信息: 读取失败"
 
-# ================= 后台处理线程 =================
+
+# ================= 后台处理线程 (在此处延迟加载重型库) =================
 class AnalysisWorker(QThread):
     progress = Signal(int, int)
     finished = Signal()
@@ -99,6 +72,11 @@ class AnalysisWorker(QThread):
         self.files = files_to_process
 
     def run(self):
+        # 【核心优化】：将 numpy, cv2, rawpy 移入线程内部加载，绝不阻塞主界面
+        import numpy as np
+        import cv2
+        import rawpy
+
         total = len(self.files)
         for i, file_path in enumerate(self.files):
             cache = get_cache_paths(file_path)
@@ -205,30 +183,34 @@ class FocusAnalyzerPro(QMainWindow):
 
         # --- 右侧预览区 ---
         right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
+        self.right_layout = QVBoxLayout(right_panel)  # 保存为实例属性，方便后续替换组件
 
         top_imgs = QHBoxLayout()
         self.label_orig = QLabel("选择文件以预览")
         self.label_orig.setAlignment(Qt.AlignCenter)
         self.label_orig.setStyleSheet("background-color: #1e1e1e; border: 1px solid #333;")
-        self.label_orig.setMinimumSize(1, 1)  # 【新增】：锁死最小尺寸，禁止反向推挤布局
+        self.label_orig.setMinimumSize(1, 1)
 
         self.label_heat = QLabel("热力图")
         self.label_heat.setAlignment(Qt.AlignCenter)
         self.label_heat.setStyleSheet("background-color: #1e1e1e; border: 1px solid #333;")
-        self.label_heat.setMinimumSize(1, 1)  # 【新增】：锁死最小尺寸
+        self.label_heat.setMinimumSize(1, 1)
 
         top_imgs.addWidget(self.label_orig)
         top_imgs.addWidget(self.label_heat)
-        # 【核心修改 1】：给顶部的 2D 图像区域分配 2 份的空间 (Stretch = 2)
-        right_layout.addLayout(top_imgs, 2)
+        self.right_layout.addLayout(top_imgs, 2)
 
-        # 3D 图表区域
-        self.fig_3d = plt.figure(facecolor='#1e1e1e')
-        self.canvas_3d = FigureCanvas(self.fig_3d)
-        self.canvas_3d.setMinimumSize(1, 1)  # 【新增】：防止 Matplotlib 画布推挤
-        # 【核心修改 2】：给底部的 3D 图表分配 1 份的空间 (Stretch = 1)
-        right_layout.addWidget(self.canvas_3d, 1)
+        # 【核心优化】：移除启动时的 Matplotlib 加载，改为轻量级占位符
+        self.canvas_3d_placeholder = QLabel("3D 拓扑引擎待命中...\n(将在首次选择分析结果时极速加载)")
+        self.canvas_3d_placeholder.setAlignment(Qt.AlignCenter)
+        self.canvas_3d_placeholder.setStyleSheet(
+            "background-color: #1e1e1e; border: 1px solid #333; color: #666; font-size: 14px;")
+        self.canvas_3d_placeholder.setMinimumSize(1, 1)
+        self.right_layout.addWidget(self.canvas_3d_placeholder, 1)
+
+        # 初始化为 None，待稍后动态创建
+        self.fig_3d = None
+        self.canvas_3d = None
 
         # EXIF 信息条
         self.label_exif = QLabel("📷 拍摄参数: 暂无数据")
@@ -237,8 +219,7 @@ class FocusAnalyzerPro(QMainWindow):
             "color: #a0a0a0; font-size: 14px; font-weight: bold; "
             "padding: 10px; background-color: #1e1e1e; border-top: 1px solid #333;"
         )
-        # 【核心修改 3】：给参数条分配 0 份空间，让它保持原本固定的高度，不被拉伸
-        right_layout.addWidget(self.label_exif, 0)
+        self.right_layout.addWidget(self.label_exif, 0)
 
         splitter.addWidget(right_panel)
         splitter.setSizes([350, 1050])
@@ -250,17 +231,12 @@ class FocusAnalyzerPro(QMainWindow):
     def _show_context_menu(self, position):
         if not self.tree.selectedItems(): return
         menu = QMenu()
-
-        # 选项 1：彻底移除
         delete_action = QAction("🗑️ 从列表中移除 (并清理缓存)", self)
         delete_action.triggered.connect(self.delete_selected_items)
         menu.addAction(delete_action)
-
-        # 选项 2：仅清理缓存并重置状态
         clear_cache_action = QAction("🧹 仅清理缓存 (恢复为未分析状态)", self)
         clear_cache_action.triggered.connect(self.clear_cache_only)
         menu.addAction(clear_cache_action)
-
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def _tree_key_press_event(self, event):
@@ -269,75 +245,60 @@ class FocusAnalyzerPro(QMainWindow):
         else:
             QTreeWidget.keyPressEvent(self.tree, event)
 
-    # 【新增功能】：仅清理缓存并恢复未分析状态
     def clear_cache_only(self):
         selected_items = self.tree.selectedItems()
         if not selected_items: return
-
         reply = QMessageBox.question(
             self, "确认清理",
             "确定要清理选中项目的缓存吗？\n(这将会把它们恢复为未分析状态，并自动打勾以便重新分析)",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply != QMessageBox.Yes: return
-
         self.tree.blockSignals(True)
-        for item in selected_items:
-            self._clear_item_cache_and_reset(item)
-
+        for item in selected_items: self._clear_item_cache_and_reset(item)
         self.tree.blockSignals(False)
         self.update_selected_count()
 
-        # 为了防止画面还残留着刚才清掉的图片，重置右侧预览区
         self.label_orig.clear()
         self.label_heat.clear()
         self.label_orig.setText("缓存已清理，请重新分析")
         self.label_heat.setText("热力图 (暂无数据)")
-        self.fig_3d.clear()
-        self.canvas_3d.draw()
+        # 防御性编程：确认 fig_3d 已经生成才清除
+        if self.fig_3d is not None:
+            self.fig_3d.clear()
+            self.canvas_3d.draw()
         self.label_exif.setText("📷 拍摄参数: 暂无数据")
         self.status_label.setText("就绪")
 
     def _clear_item_cache_and_reset(self, item):
-        """递归清理缓存并重置 UI 状态的核心逻辑"""
         if item.childCount() > 0:
-            for i in range(item.childCount()):
-                self._clear_item_cache_and_reset(item.child(i))
+            for i in range(item.childCount()): self._clear_item_cache_and_reset(item.child(i))
         else:
             file_path = item.data(0, Qt.UserRole)
             if file_path:
-                # 物理删除缓存文件
                 for path in get_cache_paths(file_path).values():
                     if os.path.exists(path):
                         try:
                             os.remove(path)
                         except:
                             pass
-
-                # 恢复 UI 状态：去掉前面的 ✅，并重新打上勾
                 current_text = item.text(0)
-                if current_text.startswith("✅ "):
-                    item.setText(0, current_text[2:])  # 截掉开头的 ✅ 和空格
+                if current_text.startswith("✅ "): item.setText(0, current_text[2:])
                 item.setCheckState(0, Qt.Checked)
 
-    # 原有的彻底删除逻辑保持不变
     def delete_selected_items(self):
-        # ... (这里保留你原本的 delete_selected_items 里的代码不变) ...
         selected_items = self.tree.selectedItems()
         if not selected_items: return
-
         reply = QMessageBox.question(
             self, "确认移除",
             "确定要移除选中的项目吗？\n(这将会清理它产生的本地缓存文件，但不会删除原图)",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply != QMessageBox.Yes: return
-
         self.tree.blockSignals(True)
         for item in selected_items:
             if item.treeWidget() is None: continue
             self._delete_item_and_cache(item)
-
         self.tree.blockSignals(False)
         self.update_selected_count()
 
@@ -346,13 +307,13 @@ class FocusAnalyzerPro(QMainWindow):
             self.label_heat.clear()
             self.label_orig.setText("列表已清空")
             self.label_heat.setText("")
-            self.fig_3d.clear()
-            self.canvas_3d.draw()
+            if self.fig_3d is not None:
+                self.fig_3d.clear()
+                self.canvas_3d.draw()
             self.label_exif.setText("📷 拍摄参数: 暂无数据")
             self.status_label.setText("已清理完毕")
 
     def _delete_item_and_cache(self, item):
-        # ... (这里保留你原本的 _delete_item_and_cache 里的代码不变) ...
         if item.childCount() > 0:
             children = [item.child(i) for i in range(item.childCount())]
             for child in children: self._delete_item_and_cache(child)
@@ -365,7 +326,6 @@ class FocusAnalyzerPro(QMainWindow):
                             os.remove(path)
                         except:
                             pass
-
         parent = item.parent()
         if parent:
             parent.removeChild(item)
@@ -376,18 +336,15 @@ class FocusAnalyzerPro(QMainWindow):
             idx = self.tree.indexOfTopLevelItem(item)
             if idx >= 0: self.tree.takeTopLevelItem(idx)
 
-    # ================= 核心统计 =================
+    # ================= 核心统计与拖拽 (保持不变) =================
     def update_selected_count(self, item=None, column=None):
         count = 0
         iterator = QTreeWidgetItemIterator(self.tree)
         while iterator.value():
             curr_item = iterator.value()
-            if curr_item.childCount() == 0 and curr_item.checkState(0) == Qt.Checked:
-                count += 1
+            if curr_item.childCount() == 0 and curr_item.checkState(0) == Qt.Checked: count += 1
             iterator += 1
-
         self.lbl_selected_count.setText(f"已选择: {count} 个文件")
-
         if count == 0:
             self.btn_run.setEnabled(False)
             self.btn_run.setStyleSheet("background-color: #555; color: #888; font-weight: bold; padding: 8px;")
@@ -395,7 +352,6 @@ class FocusAnalyzerPro(QMainWindow):
             self.btn_run.setEnabled(True)
             self.btn_run.setStyleSheet("background-color: #2b579a; color: white; font-weight: bold; padding: 8px;")
 
-    # ================= 拖拽支持与列表挂载 =================
     def _drag_enter_event(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -411,7 +367,6 @@ class FocusAnalyzerPro(QMainWindow):
     def _drop_event(self, event):
         urls = event.mimeData().urls()
         files_to_add = []
-
         self.tree.blockSignals(True)
         for url in urls:
             path = url.toLocalFile()
@@ -420,9 +375,7 @@ class FocusAnalyzerPro(QMainWindow):
                 self.import_folder_by_path(path)
             elif os.path.isfile(path) and path.lower().endswith(('.jpg', '.png', '.nef', '.cr2', '.dng')):
                 files_to_add.append(path)
-
         if files_to_add: self.import_files_by_paths(files_to_add)
-
         self.tree.blockSignals(False)
         self.update_selected_count()
 
@@ -431,7 +384,6 @@ class FocusAnalyzerPro(QMainWindow):
         item.setText(0, name)
         item.setData(0, Qt.UserRole, full_path)
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-
         cache = get_cache_paths(full_path)
         if os.path.exists(cache['heatmap']):
             item.setCheckState(0, Qt.Unchecked)
@@ -444,25 +396,21 @@ class FocusAnalyzerPro(QMainWindow):
         exts = ('.jpg', '.png', '.nef', '.cr2', '.dng')
         valid_files = [f for f in os.listdir(folder) if f.lower().endswith(exts)]
         if not valid_files: return
-
         clean_path = os.path.normpath(folder)
         folder_name = os.path.basename(clean_path)
         if not folder_name: folder_name = clean_path
-
         root = QTreeWidgetItem(self.tree)
         root.setText(0, f"📁 {folder_name}")
         root.setData(0, Qt.UserRole, folder)
         root.setFlags(root.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsAutoTristate)
         root.setCheckState(0, Qt.Checked)
-
-        for f in valid_files:
-            self.add_tree_item(root, f, os.path.join(folder, f), False)
+        for f in valid_files: self.add_tree_item(root, f, os.path.join(folder, f), False)
         self.tree.expandAll()
 
     def import_files_by_paths(self, files):
         for f in files: self.add_tree_item(self.tree, os.path.basename(f), f, False)
 
-    # ================= 启动分析与显示 =================
+    # ================= 启动分析 =================
     def start_analysis(self):
         files_to_process = []
         iterator = QTreeWidgetItemIterator(self.tree)
@@ -470,17 +418,14 @@ class FocusAnalyzerPro(QMainWindow):
             item = iterator.value()
             if item.childCount() == 0 and item.checkState(0) == Qt.Checked:
                 path = item.data(0, Qt.UserRole)
-                if path and os.path.isfile(path):
-                    files_to_process.append(path)
+                if path and os.path.isfile(path): files_to_process.append(path)
             iterator += 1
-
         if not files_to_process: return
 
         self.tree.setEnabled(False)
         self.btn_run.setEnabled(False)
         self.btn_run.setText("⏳ 正在全力分析中...")
         self.btn_run.setStyleSheet("background-color: #b8860b; color: white; font-weight: bold; padding: 8px;")
-
         self.progress_bar.setMaximum(len(files_to_process))
         self.progress_bar.setValue(0)
 
@@ -494,7 +439,6 @@ class FocusAnalyzerPro(QMainWindow):
         self.tree.setEnabled(True)
         self.btn_run.setText("⚡ 开始分析选中的文件")
         self.status_label.setText("任务全部完成！")
-
         self.tree.blockSignals(True)
         iterator = QTreeWidgetItemIterator(self.tree)
         while iterator.value():
@@ -503,28 +447,49 @@ class FocusAnalyzerPro(QMainWindow):
                 path = item.data(0, Qt.UserRole)
                 if os.path.exists(get_cache_paths(path)['heatmap']):
                     item.setCheckState(0, Qt.Unchecked)
-                    if not item.text(0).startswith("✅"):
-                        item.setText(0, f"✅ {item.text(0)}")
+                    if not item.text(0).startswith("✅"): item.setText(0, f"✅ {item.text(0)}")
             iterator += 1
         self.tree.blockSignals(False)
         self.update_selected_count()
 
+    # ================= 核心显示渲染 (动态加载 Matplotlib) =================
     def display_cache(self, item, column):
         if item.childCount() > 0: return
         file_path = item.data(0, Qt.UserRole)
         cache = get_cache_paths(file_path)
 
-        # 【新增】：每次点击图片，瞬间读取该图片的 EXIF 信息并展示
         self.label_exif.setText(get_exif_string(file_path))
 
         if os.path.exists(cache['heatmap']):
-            self.status_label.setText(f"极速加载中: {item.text(0)}")
+            self.status_label.setText(f"渲染中: {item.text(0)}")
+
+            # 【核心优化】：在此处按需导入 OpenCV 和 numpy
+            import cv2
+            import numpy as np
+
             orig = cv2.imread(cache['original'])
             over = cv2.imread(cache['overlay'])
             heat = np.load(cache['heatmap'])
 
             self._show_img(orig, self.label_orig)
             self._show_img(over, self.label_heat)
+
+            # 【核心优化】：首次点击时，动态加载 Matplotlib 并替换掉占位符
+            if self.canvas_3d is None:
+                self.status_label.setText("首次加载 3D 引擎中，请稍候...")
+                QApplication.processEvents()  # 刷新UI文字让用户看到提示
+
+                from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+                import matplotlib.pyplot as plt
+
+                self.fig_3d = plt.figure(facecolor='#1e1e1e')
+                self.canvas_3d = FigureCanvas(self.fig_3d)
+                self.canvas_3d.setMinimumSize(1, 1)
+
+                # 狸猫换太子：用真正的画布替换占位符
+                self.right_layout.replaceWidget(self.canvas_3d_placeholder, self.canvas_3d)
+                self.canvas_3d_placeholder.deleteLater()
+                self.canvas_3d_placeholder = None
 
             self.fig_3d.clear()
             ax = self.fig_3d.add_subplot(111, projection='3d')
@@ -541,11 +506,13 @@ class FocusAnalyzerPro(QMainWindow):
             self.label_heat.clear()
             self.label_orig.setText("图片尚未分析")
             self.label_heat.setText("热力图 (图片尚未分析)")
-            self.fig_3d.clear()
-            self.canvas_3d.draw()
+            if self.fig_3d is not None:
+                self.fig_3d.clear()
+                self.canvas_3d.draw()
             self.status_label.setText("就绪")
 
     def _show_img(self, cv_bgr, label):
+        import cv2  # 局部导入
         rgb = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
