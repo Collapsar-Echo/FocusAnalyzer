@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['pro_app.py'],
+    ['main.py'],
     pathex=[],
     binaries=[],
     datas=[],
